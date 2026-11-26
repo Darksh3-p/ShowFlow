@@ -10,18 +10,27 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Unzip the source zip found in the repo
+      - name: Find and unzip the ShowFlow source zip
         shell: pwsh
         run: |
-          $zip = Get-ChildItem -Path . -Filter *.zip -File -Recurse | Select-Object -First 1
-          if (-not $zip) { throw "No .zip file found in the repository. Upload ShowFlow_Source.zip to the repo root." }
-          Write-Host "Extracting $($zip.FullName)"
-          Expand-Archive -Path $zip.FullName -DestinationPath "$PWD/_extracted" -Force
-          $cargo = Get-ChildItem -Path "$PWD/_extracted" -Filter Cargo.toml -Recurse |
-                   Where-Object { Test-Path (Join-Path $_.DirectoryName 'src-tauri') } |
-                   Select-Object -First 1
-          if (-not $cargo) { throw "Could not find the project (Cargo.toml next to src-tauri) inside the zip." }
-          $dir = $cargo.DirectoryName.Replace('\','/')
+          $zips = @(Get-ChildItem -Path . -Filter *.zip -File -Recurse)
+          if ($zips.Count -eq 0) { throw "No .zip file found in the repository." }
+          # Prefer ShowFlow_Source*.zip, then try every other zip
+          $ordered = @($zips | Where-Object { $_.Name -like 'ShowFlow_Source*' }) + @($zips | Where-Object { $_.Name -notlike 'ShowFlow_Source*' })
+          $dir = $null
+          $i = 0
+          foreach ($z in $ordered) {
+            $i++
+            $dest = "$PWD/_extracted_$i"
+            Write-Host "Trying $($z.Name)"
+            Expand-Archive -Path $z.FullName -DestinationPath $dest -Force
+            $cargo = Get-ChildItem -Path $dest -Filter Cargo.toml -Recurse |
+                     Where-Object { Test-Path (Join-Path $_.DirectoryName 'src-tauri') } |
+                     Select-Object -First 1
+            if ($cargo) { $dir = $cargo.DirectoryName.Replace('\','/'); Write-Host "Found project in $($z.Name)"; break }
+            Write-Host "  not the ShowFlow source, skipping"
+          }
+          if (-not $dir) { throw "None of the zip files contain the ShowFlow project. Upload ShowFlow_Source.zip to the repo." }
           Write-Host "Project directory: $dir"
           "PROJECT_DIR=$dir" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           Get-ChildItem $dir
