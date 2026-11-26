@@ -1,135 +1,61 @@
-name: Build ShowFlow Windows Installer
+name: Build ShowFlow from zip
 
 on:
   workflow_dispatch:
   push:
-    branches:
-      - main
-      - master
-
-permissions:
-  contents: read
 
 jobs:
   build:
-    name: Build Windows NSIS installer
     runs-on: windows-latest
-    timeout-minutes: 45
-
     steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Locate and extract ShowFlow source ZIP
-        id: source
+      - name: Find and unzip the ShowFlow source zip
         shell: pwsh
         run: |
-          $ErrorActionPreference = 'Stop'
-
-          $zips = @(Get-ChildItem -Path $PWD -Filter '*.zip' -File -Recurse |
-            Where-Object { $_.FullName -notmatch '[\\/](target|node_modules|_showflow_extract)[\\/]' } |
-            Sort-Object @{
-              Expression = {
-                if ($_.Name -like 'ShowFlow_GitHub_Actions_Ready*') { 0 }
-                elseif ($_.Name -like 'ShowFlow_Single_Display_Background_Mode*') { 1 }
-                elseif ($_.Name -like 'ShowFlow*') { 2 }
-                else { 3 }
-              }
-            }, LastWriteTime -Descending)
-
-          if ($zips.Count -eq 0) {
-            throw 'No ShowFlow source ZIP found in the repository.'
+          $zips = @(Get-ChildItem -Path . -Filter *.zip -File -Recurse)
+          if ($zips.Count -eq 0) { throw "No .zip file found in the repository." }
+          # Prefer ShowFlow_Source*.zip, then try every other zip
+          $ordered = @($zips | Where-Object { $_.Name -like 'ShowFlow_Source*' }) + @($zips | Where-Object { $_.Name -notlike 'ShowFlow_Source*' })
+          $dir = $null
+          $i = 0
+          foreach ($z in $ordered) {
+            $i++
+            $dest = "$PWD/_extracted_$i"
+            Write-Host "Trying $($z.Name)"
+            Expand-Archive -Path $z.FullName -DestinationPath $dest -Force
+            $cargo = Get-ChildItem -Path $dest -Filter Cargo.toml -Recurse |
+                     Where-Object { Test-Path (Join-Path $_.DirectoryName 'src-tauri') } |
+                     Select-Object -First 1
+            if ($cargo) { $dir = $cargo.DirectoryName.Replace('\','/'); Write-Host "Found project in $($z.Name)"; break }
+            Write-Host "  not the ShowFlow source, skipping"
           }
+          if (-not $dir) { throw "None of the zip files contain the ShowFlow project. Upload ShowFlow_Source.zip to the repo." }
+          Write-Host "Project directory: $dir"
+          "PROJECT_DIR=$dir" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          Get-ChildItem $dir
 
-          $projectDir = $null
-          $index = 0
-
-          foreach ($zip in $zips) {
-            $index++
-            $destination = Join-Path $PWD "_showflow_extract_$index"
-            Write-Host "Checking archive: $($zip.Name)"
-            Expand-Archive -LiteralPath $zip.FullName -DestinationPath $destination -Force
-
-            $cargoFiles = @(Get-ChildItem -Path $destination -Filter 'Cargo.toml' -File -Recurse)
-            foreach ($cargoFile in $cargoFiles) {
-              $candidate = $cargoFile.Directory.FullName
-              if ((Test-Path (Join-Path $candidate 'src-tauri')) -and
-                  (Test-Path (Join-Path $candidate 'package.json')) -and
-                  (Test-Path (Join-Path $candidate 'vite.config.js'))) {
-                $projectDir = $candidate
-                break
-              }
-            }
-
-            if ($projectDir) { break }
-          }
-
-          if (-not $projectDir) {
-            throw 'ShowFlow project not found in ZIP. Expected Cargo.toml, src-tauri/, package.json and vite.config.js.'
-          }
-
-          $projectDir = (Resolve-Path $projectDir).Path
-          Write-Host "ShowFlow project directory: $projectDir"
-          "project_dir=$projectDir" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: 20
 
-      - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: x86_64-pc-windows-msvc
+      - uses: dtolnay/rust-toolchain@stable
 
-      - name: Cache Rust build
-        uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: |
-            ${{ steps.source.outputs.project_dir }} -> target
+      - name: Run tests
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: cargo test -p showflow-core -p showflow-sharing
 
-      - name: Verify toolchain
-        shell: pwsh
-        run: |
-          node --version
-          npm --version
-          rustc --version
-          cargo --version
+      - name: Install Tauri CLI
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: npm install
 
-      - name: Run Rust tests
-        working-directory: ${{ steps.source.outputs.project_dir }}
-        shell: pwsh
-        run: cargo test --workspace
-
-      - name: Install frontend and Tauri dependencies
-        working-directory: ${{ steps.source.outputs.project_dir }}
-        shell: pwsh
-        run: npm install --no-audit --no-fund
-
-      - name: Build ShowFlow installer
-        working-directory: ${{ steps.source.outputs.project_dir }}
-        shell: pwsh
+      - name: Build installer
+        working-directory: ${{ env.PROJECT_DIR }}
         run: npm run build
 
-      - name: Verify installer exists
-        working-directory: ${{ steps.source.outputs.project_dir }}
-        shell: pwsh
-        run: |
-          $installerDir = Join-Path $PWD 'target/release/bundle/nsis'
-          $installers = @(Get-ChildItem -Path $installerDir -Filter '*.exe' -File -ErrorAction SilentlyContinue)
-
-          if ($installers.Count -eq 0) {
-            throw "No NSIS installer EXE found in $installerDir"
-          }
-
-          $installers | ForEach-Object {
-            Write-Host ("Found installer: {0} ({1:N2} MB)" -f $_.FullName, ($_.Length / 1MB))
-          }
-
-      - name: Upload ShowFlow installer
+      - name: Upload installer
         uses: actions/upload-artifact@v4
         with:
-          name: ShowFlow-Windows-Installer
-          path: ${{ steps.source.outputs.project_dir }}/target/release/bundle/nsis/*.exe
+          name: ShowFlow-installer
+          path: ${{ env.PROJECT_DIR }}/target/release/bundle/nsis/*.exe
           if-no-files-found: error
-          retention-days: 30
