@@ -1,47 +1,52 @@
-name: Unpack project
-
-# Put THIS file at .github/workflows/unpack.yml by hand (GitHub: Add file > Create new file).
-# Then upload kestrel_project.zip to the repository root and run this workflow.
+name: Build ShowFlow from zip
 
 on:
   workflow_dispatch:
-
-permissions:
-  contents: write
+  push:
 
 jobs:
-  unpack:
-    runs-on: ubuntu-latest
+  build:
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Unzip into the repository
+      - name: Unzip the source zip found in the repo
+        shell: pwsh
         run: |
-          set -e
-          ZIP="kestrel_project.zip"
-          if [ ! -f "$ZIP" ]; then
-            echo "::error::kestrel_project.zip was not found in the repository root. Upload it first (Add file > Upload files), then run this again."
-            exit 1
-          fi
-          TMP="$(mktemp -d)"
-          unzip -q "$ZIP" -d "$TMP"
-          rm -rf "$TMP/__MACOSX"
-          COUNT="$(find "$TMP" -mindepth 1 -maxdepth 1 | wc -l)"
-          SRC="$TMP"
-          if [ "$COUNT" -eq 1 ] && [ -d "$(find "$TMP" -mindepth 1 -maxdepth 1)" ]; then
-            SRC="$(find "$TMP" -mindepth 1 -maxdepth 1)"
-          fi
-          rm -rf "$SRC/.github"
-          cp -a "$SRC"/. .
-          rm -f "$ZIP"
-          ls
+          $zip = Get-ChildItem -Path . -Filter *.zip -File -Recurse | Select-Object -First 1
+          if (-not $zip) { throw "No .zip file found in the repository. Upload ShowFlow_Source.zip to the repo root." }
+          Write-Host "Extracting $($zip.FullName)"
+          Expand-Archive -Path $zip.FullName -DestinationPath "$PWD/_extracted" -Force
+          $cargo = Get-ChildItem -Path "$PWD/_extracted" -Filter Cargo.toml -Recurse |
+                   Where-Object { Test-Path (Join-Path $_.DirectoryName 'src-tauri') } |
+                   Select-Object -First 1
+          if (-not $cargo) { throw "Could not find the project (Cargo.toml next to src-tauri) inside the zip." }
+          $dir = $cargo.DirectoryName.Replace('\','/')
+          Write-Host "Project directory: $dir"
+          "PROJECT_DIR=$dir" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          Get-ChildItem $dir
 
-      - name: Commit and push
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -A
-          if git diff --cached --quiet; then echo "Nothing to commit."; else
-            git commit -m "chore: unpack project"
-            git push
-          fi
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Run tests
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: cargo test -p showflow-core -p showflow-sharing
+
+      - name: Install Tauri CLI
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: npm install
+
+      - name: Build installer
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: npm run build
+
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: ShowFlow-installer
+          path: ${{ env.PROJECT_DIR }}/target/release/bundle/nsis/*.exe
+          if-no-files-found: error
