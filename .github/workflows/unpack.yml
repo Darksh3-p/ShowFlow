@@ -1,3 +1,35 @@
+name: Build ShowFlow Windows Installer
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - master
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build Windows NSIS installer
+    runs-on: windows-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Locate and extract ShowFlow source ZIP
+        id: source
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          $zips = @(Get-ChildItem -Path $PWD -Filter '*.zip' -File -Recurse |
+            Where-Object { $_.FullName -notmatch '[\\/](target|node_modules|_showflow_extract)[\\/]' } |
+            Sort-Object @{
+              Expression = {
                 if ($_.Name -like 'ShowFlow_GitHub_Actions_Ready*') { 0 }
                 elseif ($_.Name -like 'ShowFlow_Single_Display_Background_Mode*') { 1 }
                 elseif ($_.Name -like 'ShowFlow*') { 2 }
