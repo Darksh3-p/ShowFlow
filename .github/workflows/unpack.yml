@@ -71,6 +71,7 @@ jobs:
           $projectDir = (Resolve-Path $projectDir).Path
           Write-Host "ShowFlow project: $projectDir"
           "PROJECT_DIR=$projectDir" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "project_dir=$projectDir" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -93,36 +94,3 @@ jobs:
         run: |
           node --version
           npm --version
-          rustc --version
-          cargo --version
-
-      - name: Run Rust tests
-        working-directory: ${{ env.PROJECT_DIR }}
-        shell: pwsh
-        run: cargo test --workspace
-        continue-on-error: false
-
-      - name: Install frontend and Tauri CLI dependencies
-        working-directory: ${{ env.PROJECT_DIR }}
-        shell: pwsh
-        run: npm install --no-audit --no-fund
-
-      - name: Build ShowFlow installer
-        working-directory: ${{ env.PROJECT_DIR }}
-        shell: pwsh
-        run: npm run build
-
-      - name: Verify installer exists
-        working-directory: ${{ env.PROJECT_DIR }}
-        shell: pwsh
-        run: |
-          $installers = @(Get-ChildItem -Path 'target/release/bundle/nsis' -Filter '*.exe' -File -ErrorAction SilentlyContinue)
-          if ($installers.Count -eq 0) {
-            throw 'Tauri build completed but no NSIS .exe installer was found.'
-          }
-          $installers | ForEach-Object {
-            Write-Host ("Installer: {0} ({1:N2} MB)" -f $_.FullName, ($_.Length / 1MB))
-          }
-
-      - name: Upload ShowFlow installer
-        uses: actions/upload-artifact@v4
